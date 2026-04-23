@@ -1,0 +1,197 @@
+<!--
+  local_rules.xml — Regras customizadas Wazuh para ambiente AD
+  Arquivo: /var/ossec/etc/rules/local_rules.xml (no servidor Wazuh)
+
+  Cobre os principais eventos de segurança gerados pelo hardening do Projeto 1:
+    - Falhas de autenticação / brute force
+    - Bloqueios de conta (lockout)
+    - Alterações em grupos privilegiados
+    - Mudanças de GPO
+    - Acesso a arquivos sensíveis (NTFS audit)
+    - Criação/deleção de usuários
+    - Uso de conta privilegiada fora do horário
+-->
+
+<group name="windows_ad_audit,">
+
+  <!-- ─── AUTENTICAÇÃO ───────────────────────────────────────────────── -->
+
+  <!-- EventID 4625: Falha de logon -->
+  <rule id="100100" level="5">
+    <if_group>authentication_failed</if_group>
+    <field name="win.system.eventID">^4625$</field>
+    <description>Windows: Falha de autenticação - $(win.eventdata.targetUserName)</description>
+    <mitre>
+      <id>T1110</id><!-- Brute Force -->
+    </mitre>
+    <group>authentication_failure,win_authentication,</group>
+  </rule>
+
+  <!-- 5 falhas em 2 minutos = possível brute force -->
+  <rule id="100101" level="10" frequency="5" timeframe="120">
+    <if_matched_sid>100100</if_matched_sid>
+    <same_field>win.eventdata.targetUserName</same_field>
+    <description>ALERTA: Possível brute force - $(win.eventdata.targetUserName) (5 falhas em 2 min)</description>
+    <mitre>
+      <id>T1110.001</id><!-- Password Guessing -->
+    </mitre>
+    <group>brute_force,authentication_failure,</group>
+  </rule>
+
+  <!-- EventID 4740: Conta bloqueada por lockout -->
+  <rule id="100102" level="12">
+    <field name="win.system.eventID">^4740$</field>
+    <description>CRITICO: Conta bloqueada por lockout - $(win.eventdata.targetUserName) (origem: $(win.eventdata.callerComputerName))</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>account_lockout,authentication_failure,</group>
+  </rule>
+
+  <!-- EventID 4624 tipo 10 (RemoteInteractive = RDP) -->
+  <rule id="100103" level="6">
+    <field name="win.system.eventID">^4624$</field>
+    <field name="win.eventdata.logonType">^10$</field>
+    <description>Login RDP bem-sucedido: $(win.eventdata.targetUserName) de $(win.eventdata.ipAddress)</description>
+    <mitre>
+      <id>T1021.001</id><!-- Remote Desktop Protocol -->
+    </mitre>
+    <group>rdp_login,win_authentication,</group>
+  </rule>
+
+  <!-- ─── GERENCIAMENTO DE CONTAS ───────────────────────────────────── -->
+
+  <!-- EventID 4720: Novo usuário criado -->
+  <rule id="100110" level="8">
+    <field name="win.system.eventID">^4720$</field>
+    <description>Novo usuário criado: $(win.eventdata.targetUserName) por $(win.eventdata.subjectUserName)</description>
+    <mitre>
+      <id>T1136.001</id><!-- Create Account: Local Account -->
+    </mitre>
+    <group>account_management,user_creation,</group>
+  </rule>
+
+  <!-- EventID 4726: Usuário deletado -->
+  <rule id="100111" level="8">
+    <field name="win.system.eventID">^4726$</field>
+    <description>Usuário deletado: $(win.eventdata.targetUserName) por $(win.eventdata.subjectUserName)</description>
+    <group>account_management,user_deletion,</group>
+  </rule>
+
+  <!-- EventID 4722: Conta reativada -->
+  <rule id="100112" level="9">
+    <field name="win.system.eventID">^4722$</field>
+    <description>Conta reativada: $(win.eventdata.targetUserName) por $(win.eventdata.subjectUserName)</description>
+    <mitre>
+      <id>T1078</id><!-- Valid Accounts -->
+    </mitre>
+    <group>account_management,</group>
+  </rule>
+
+  <!-- EventID 4723/4724: Troca de senha -->
+  <rule id="100113" level="6">
+    <field name="win.system.eventID">^4723$|^4724$</field>
+    <description>Senha alterada para: $(win.eventdata.targetUserName)</description>
+    <group>account_management,password_change,</group>
+  </rule>
+
+  <!-- ─── GRUPOS PRIVILEGIADOS ──────────────────────────────────────── -->
+
+  <!-- EventID 4728: Usuário adicionado ao Domain Admins -->
+  <rule id="100120" level="14">
+    <field name="win.system.eventID">^4728$</field>
+    <field name="win.eventdata.targetUserName" type="pcre2">(?i)domain admins|enterprise admins|schema admins</field>
+    <description>CRITICO: Usuário adicionado a grupo privilegiado: $(win.eventdata.memberName) → $(win.eventdata.targetUserName)</description>
+    <mitre>
+      <id>T1098</id><!-- Account Manipulation -->
+    </mitre>
+    <group>privilege_escalation,group_management,</group>
+  </rule>
+
+  <!-- EventID 4729: Usuário removido de grupo privilegiado -->
+  <rule id="100121" level="10">
+    <field name="win.system.eventID">^4729$</field>
+    <field name="win.eventdata.targetUserName" type="pcre2">(?i)domain admins|enterprise admins</field>
+    <description>Usuário removido de grupo privilegiado: $(win.eventdata.memberName) ← $(win.eventdata.targetUserName)</description>
+    <group>group_management,</group>
+  </rule>
+
+  <!-- EventID 4732: Adicionado ao grupo local Administrators -->
+  <rule id="100122" level="12">
+    <field name="win.system.eventID">^4732$</field>
+    <field name="win.eventdata.targetUserName" type="pcre2">(?i)administrators</field>
+    <description>ALERTA: Usuário adicionado ao grupo local Administrators: $(win.eventdata.memberName)</description>
+    <mitre>
+      <id>T1098</id>
+    </mitre>
+    <group>privilege_escalation,group_management,</group>
+  </rule>
+
+  <!-- ─── GPO E POLÍTICAS ───────────────────────────────────────────── -->
+
+  <!-- EventID 5136: Atributo de objeto AD modificado -->
+  <rule id="100130" level="8">
+    <field name="win.system.eventID">^5136$</field>
+    <description>Objeto AD modificado: $(win.eventdata.objectDN) - atributo: $(win.eventdata.attributeLDAPDisplayName)</description>
+    <mitre>
+      <id>T1484</id><!-- Domain Policy Modification -->
+    </mitre>
+    <group>ad_object_change,policy_change,</group>
+  </rule>
+
+  <!-- EventID 5145: Acesso a compartilhamento de rede (SYSVOL = GPO) -->
+  <rule id="100131" level="7">
+    <field name="win.system.eventID">^5145$</field>
+    <field name="win.eventdata.shareName" type="pcre2">(?i)sysvol|netlogon</field>
+    <description>Acesso ao compartilhamento GPO (SYSVOL/NETLOGON): $(win.eventdata.subjectUserName)</description>
+    <group>gpo_access,</group>
+  </rule>
+
+  <!-- ─── ACESSO A ARQUIVOS SENSÍVEIS ──────────────────────────────── -->
+
+  <!-- EventID 4663: Acesso a objeto (requer auditoria NTFS ativa) -->
+  <rule id="100140" level="6">
+    <field name="win.system.eventID">^4663$</field>
+    <field name="win.eventdata.objectName" type="pcre2">(?i)\\passwords|\\credentials|\\sensitive|\.kdbx$|ntds\.dit</field>
+    <description>ALERTA: Acesso a arquivo sensível: $(win.eventdata.objectName) por $(win.eventdata.subjectUserName)</description>
+    <mitre>
+      <id>T1552</id><!-- Unsecured Credentials -->
+    </mitre>
+    <group>file_access,sensitive_data,</group>
+  </rule>
+
+  <!-- ntds.dit = banco do AD — acesso crítico -->
+  <rule id="100141" level="15">
+    <if_sid>100140</if_sid>
+    <field name="win.eventdata.objectName" type="pcre2">ntds\.dit</field>
+    <description>CRITICO: Acesso ao banco do AD (ntds.dit) por $(win.eventdata.subjectUserName)</description>
+    <mitre>
+      <id>T1003.003</id><!-- OS Credential Dumping: NTDS -->
+    </mitre>
+    <group>credential_access,critical,</group>
+  </rule>
+
+  <!-- ─── HORÁRIO NÃO COMERCIAL ─────────────────────────────────────── -->
+
+  <!-- Login de admin fora do horário comercial (weekends ou noite) -->
+  <rule id="100150" level="10">
+    <if_sid>100103</if_sid>
+    <time>20:00 - 07:00</time>
+    <description>Login RDP de admin fora do horário comercial: $(win.eventdata.targetUserName)</description>
+    <mitre>
+      <id>T1078</id>
+    </mitre>
+    <group>after_hours,suspicious_login,</group>
+  </rule>
+
+  <rule id="100151" level="10">
+    <if_sid>100103</if_sid>
+    <weekday>saturday,sunday</weekday>
+    <description>Login RDP no fim de semana: $(win.eventdata.targetUserName) de $(win.eventdata.ipAddress)</description>
+    <mitre>
+      <id>T1078</id>
+    </mitre>
+    <group>weekend_login,suspicious_login,</group>
+  </rule>
+
+</group>
